@@ -18,10 +18,11 @@ module variables
     !Not sure what is the thinking behind above comment. I see it now, 3 points per reocessor are needed irrespective of BCs
     integer,parameter                        :: sz=sizez/zprocs+6,sy=sizey/yprocs+6,sx=sizex+6,nprocs=zprocs*yprocs
     integer,parameter                        :: n_sp=5,n_di=3,chem_flag=1,vib_flag=1 !number of species,diatomic species and the two flags
+    !lot of places, the flags are redundant, but are still kept for additional safety
     !n_di is only used in the case of vibrational terms. It can be incorporated in Cp and Cv but they are specified explicitly
     !keep n_sp=1 and n_di=1 when ideal gas case is used, or any other model which doesn't involve dealing with seperate species
     !make sure n_di<=n_sp
-    integer,parameter                        :: neq=n_sp+4+vib_flag
+    integer,parameter                        :: neq=n_sp+4+1
     double precision,parameter               :: pi=2.0d0*asin(1.0d0),cl_para=1000d0!cl_para is the clustering parameter in y direction
     double precision                         :: alpha_x_global(1,sy,sz,neq),alpha_y(sx,0:(zprocs-1),sz,neq),alpha_y_global(sx,0:(zprocs-1),sz,neq),alpha_z(sx,sy,0:(yprocs-1),neq),alpha_z_global(sx,sy,0:(yprocs-1),neq)
     double precision,dimension(sx,sy,sz,neq) :: q,q0,ddx_fluxf,ddy_fluxg,ddz_fluxh,visf,visg,vish,fluxf,fluxg,fluxh
@@ -138,9 +139,9 @@ subroutine compute()
                                 q(i,j,k,m) = q0(i,j,k,m) - 1.0d0/l*dt*(ddx_fluxf(i,j,k,m) + ddy_fluxg(i,j,k,m) + ddz_fluxh(i,j,k,m)) + &
                                                            1.0d0/l*dt*(d6dx_vect(visf,i,j,k,m) + d6dy_vect(visg,i,j,k,m) + d6dz_vect(vish,i,j,k,m))
                             else
-                                q(i,j,k,m) = q0(i,j,k,m) - 1.0d0/l*dt*(ddx_fluxf(i,j,k,m) + ddy_fluxg(i,j,k,m) + ddz_fluxh(i,j,k,m)) + &
+                                q(i,j,k,m) = q0(i,j,k,m) - (1.0d0/l*dt*(ddx_fluxf(i,j,k,m) + ddy_fluxg(i,j,k,m) + ddz_fluxh(i,j,k,m)) + &
                                                            1.0d0/l*dt*(d6dx_vect(visf,i,j,k,m) + d6dy_vect(visg,i,j,k,m) + d6dz_vect(vish,i,j,k,m)) + &
-                                                           1.0d0/l*dt*wv(i,j,k)
+                                                           1.0d0/l*dt*wv(i,j,k))*vib_flag
                             end if
                         end do
                     end do
@@ -171,15 +172,8 @@ subroutine compute()
         q0(:,:,:,:) = q(:,:,:,:)
      
         ! call stats()
-        ! if(iter<4000) then
-            if (mod(iter,interval)==0) call output(iter,ws)
-        ! else if(iter<8000) then
-        !     if (mod(iter,100)==0) call output(iter,ws)
-        ! else
-        !     if (mod(iter,1000)==0) call output(iter,ws)
-        ! end if
-        ! call output(iter,ws)
-
+        if (mod(iter,interval)==0) call output(iter,ws)
+        
         ! if(test_time>final_time) stop   !if stop or even pause is used following if condition, one of the processors always interrupts output command of others 
         ! if(flag_global==4) test_time = final_time + 1
 
@@ -211,9 +205,12 @@ subroutine data_in()
     implicit none
     character(len=40)                 :: filename
     integer                           :: i,j,k,i1,j1,k1,m,range1,range2,numrc1,numrc2,numrc3,numrc4,statu,ierr,restart
-    double precision                  :: p1,ratio,vortex,radius,delta,dum,ignore,ignore1,add,R_s,Z_s,Cp_star,cs1_star_eq,cs2_star_eq
+    double precision                  :: p1,ratio,vortex,radius,delta,dum,ignore,ignore1,add,R_s,Z_s,Cp_star,cs1_star_eq,cs2_star_eq,Mw_mix
     double precision, dimension(n_sp) :: cs_star,ro_s_star
     double precision, dimension(n_di) :: ev_s_star,ev_s
+    double precision, dimension(n_sp) :: mu,kap,X_t,phi_t,dum1,dum2,f_diff,g_diff,h_diff,hs,one
+    double precision, dimension(n_di) :: kap_v,dum_v
+    
 
     
     !********** reference quantities **********
@@ -254,7 +251,7 @@ subroutine data_in()
     !******************** quantities dependent on initial and/or reference quantities ********************
     R_star = R_u*add(cs_star,Mw,n_sp,-1)
     Cp_star = add(cs_star,Cp,n_sp,1)
-   
+
     p_star = ro_star*R_star*T_star
 
     ro_s_star(1) = cs_star(1)*ro_star
@@ -266,7 +263,18 @@ subroutine data_in()
     gamma_star = 1d0 + ro_star*R_star/add(ro_s_star,Cv,n_sp,1)!depending on the case you are going to run, gamma can be a function of space.
     
     co_star = sqrt(gamma_star*R_star*T_star)    
-    vis_star = vis_ref*(T_star/T_ref)**0.670d0
+    ! vis_star = vis_ref*(T_star/T_ref)**0.670d0
+    mu(:) = 0.1d0*exp((At(:)*log(T_star) + Bt(:))*log(T_star) + Ct(:))
+    Mw_mix = 1d0/(add(ro_s_star(1:n_sp),Mw,n_sp,-1)/ro_star)
+    X_t(:) = Mw_mix*ro_s_star(1:n_sp)/(Mw(:)*ro_star)
+    do m=1,n_sp
+        dum1(:) = X_t(:)*(1d0 + (mu(m)/mu(:))**(1/2d0)*(Mw(:)/Mw(m))**(1/4d0))**2
+        dum2(:) = sqrt(8d0*(1d0 + Mw(m)/Mw(:)))
+        phi_t(m) = add(dum1,dum2,n_sp,-1)
+    end do
+    dum1(:) = X_t(:)*mu(:)
+    vis_star = add(dum1,phi_t,n_sp,-1)
+
     lo_star = Re*vis_star/ro_star/co_star
     vel_star = Mach*co_star
     Tv_star = T_star
@@ -395,13 +403,12 @@ subroutine data_in()
                 p(i,j,k) = ro(i,j,k)*R_star*T(i,j,k)
                 Tv(i,j,k) = T(i,j,k)
                 ev_s(:) = vib_flag*((R_u/Mw(1:n_di))*theta_v(:)/(exp(theta_v(:)/Tv(i,j,k))-1))
-                if(n_sp/=1) q(i,j,k,1:n_sp)  = cs_star(1:n_sp)*ro(i,j,k)
-                if(n_sp==1) q(i,j,k,n_sp)  = ro(i,j,k)
+                q(i,j,k,1:n_sp)  = cs_star(1:n_sp)*ro(i,j,k)
                 q(i,j,k,n_sp+1)  = ro(i,j,k)*u(i,j,k)
                 q(i,j,k,n_sp+2)  = ro(i,j,k)*v(i,j,k)
                 q(i,j,k,n_sp+3)  = ro(i,j,k)*w(i,j,k)
                 q(i,j,k,n_sp+4)  = add(q(i,j,k,1:n_sp),Cv,n_sp,1)*T(i,j,k) + 0.50d0*ro(i,j,k)*(u(i,j,k)**2 + v(i,j,k)**2 + w(i,j,k)**2) + add(q(i,j,k,1:n_di),ev_s,n_di,1)*vib_flag + add(q(i,j,k,1:n_sp),h0,n_sp,1)*chem_flag
-                if (vib_flag==1) q(i,j,k,n_sp+5) = add(q(i,j,k,1:n_di),ev_s,n_di,1)
+                q(i,j,k,n_sp+5)  = vib_flag*add(q(i,j,k,1:n_di),ev_s,n_di,1)
             end do
         end do
     end do
@@ -473,37 +480,19 @@ subroutine output(nth,ws)
     end do
     close(40)
 
-    filename='derivs'//char(nprocs+48)//'_'//char(digit1+48)//char(digit3+48)//char(digit5+48)//char(digit7+48)//char(digit9+48)//char(digit11+48)//char(digit12+48)//'p'//char(numrc1+48)//char(numrc3+48)//char(numrc4+48)//'.dat'
-    open(unit=40,file=filename,STATUS='REPLACE',ACTION='WRITE',IOSTAT=ierr)
-    if(ierr/=0) write(*,*)filename,ierr
-    write(40,'(a180)') 'variables="z","y","x","dtdx","dtdy","dtdz","dtvdx","dtvdy","dtvdz"'
-    write(40,*) 'zone I=',endz_print-startz_print+1, 'J=',endy_print-starty_print+1, 'K=',endx_print-startx_print+1,' F=POINT'
-    do i=startx_print,endx_print
-        do j=starty_print,endy_print
-            do k=startz_print,endz_print
-                write(40,'(9E20.10)') z(i,j,k)/lo_star,y_ph(i,j,k)/lo_star,x(i,j,k)/lo_star,d6dx(T,i,j,k),d6dy(T,i,j,k),d6dz(T,i,j,k),d6dx(Tv,i,j,k),d6dy(Tv,i,j,k),d6dz(Tv,i,j,k)
-            end do
-        end do
-    end do
-    close(40)
-
-    if(iter==0 .and. myrank==0) then
-        open(unit=30,file='1_data',STATUS='UNKNOWN',ACTION='WRITE',IOSTAT=ierr)
-        write(30,*)Mw(1),Mw(2),'Mw(1),Mw(2)'
-        write(30,*)dt,'dt'
-        write(30,*)Mach,'Mach'
-        write(30,*)R_star,'R_star'
-        write(30,*)co_star,'co_star'
-        write(30,*)vel_star,'vel_star'
-        write(30,*)p_star,'p_star'
-        write(30,*)T_star,'T_star'
-        write(30,*)ro_star,'ro_star'
-        write(30,*)n_sp,'n_sp'
-        write(30,*)chem_flag,'chem_flag'
-        ! write(30,*)'chem_flag=1 but source is commented to see if shock remains stationary'
-        close(30)
-    end if
-
+    ! filename='derivs'//char(nprocs+48)//'_'//char(digit1+48)//char(digit3+48)//char(digit5+48)//char(digit7+48)//char(digit9+48)//char(digit11+48)//char(digit12+48)//'p'//char(numrc1+48)//char(numrc3+48)//char(numrc4+48)//'.dat'
+    ! open(unit=40,file=filename,STATUS='REPLACE',ACTION='WRITE',IOSTAT=ierr)
+    ! if(ierr/=0) write(*,*)filename,ierr
+    ! write(40,'(a180)') 'variables="z","y","x","dtdx","dtdy","dtdz","dtvdx","dtvdy","dtvdz"'
+    ! write(40,*) 'zone I=',endz_print-startz_print+1, 'J=',endy_print-starty_print+1, 'K=',endx_print-startx_print+1,' F=POINT'
+    ! do i=startx_print,endx_print
+    !     do j=starty_print,endy_print
+    !         do k=startz_print,endz_print
+    !             write(40,'(9E20.10)') z(i,j,k)/lo_star,y_ph(i,j,k)/lo_star,x(i,j,k)/lo_star,d6dx(T,i,j,k),d6dy(T,i,j,k),d6dz(T,i,j,k),d6dx(Tv,i,j,k),d6dy(Tv,i,j,k),d6dz(Tv,i,j,k)
+    !         end do
+    !     end do
+    ! end do
+    ! close(40)
 
     ! filename='Time.dat'
     ! open(unit=30,file=filename,STATUS='UNKNOWN',ACTION='WRITE',IOSTAT=ierr)
@@ -837,15 +826,13 @@ subroutine update(rkl)
                     STOP
                 end if
                 vel_square = u(i,j,k)*u(i,j,k) + v(i,j,k)*v(i,j,k) + w(i,j,k)*w(i,j,k)
-                if (vib_flag==1) T(i,j,k) = (q(i,j,k,n_sp+4) - q(i,j,k,n_sp+5) - 0.50d0*ro(i,j,k)*vel_square - chem_flag*add(q(i,j,k,1:n_sp),h0,n_sp,1))/add(q(i,j,k,1:n_sp),Cv,n_sp,1)
-                if (vib_flag==0) T(i,j,k) = (q(i,j,k,n_sp+4) - 0.50d0*ro(i,j,k)*vel_square - chem_flag*add(q(i,j,k,1:n_sp),h0,n_sp,1))/add(q(i,j,k,1:n_sp),Cv,n_sp,1)
+                T(i,j,k) = (q(i,j,k,n_sp+4) - vib_flag*q(i,j,k,n_sp+5) - 0.50d0*ro(i,j,k)*vel_square - chem_flag*add(q(i,j,k,1:n_sp),h0,n_sp,1))/add(q(i,j,k,1:n_sp),Cv,n_sp,1)
                 R_s = R_u*add(q(i,j,k,1:n_sp),Mw,n_sp,-1)/ro(i,j,k)
                 p(i,j,k) = ro(i,j,k)*R_s*T(i,j,k)
                 a(i,j,k) = sqrt(R_s*T(i,j,k)*(1 + R_s*ro(i,j,k)/add(q(i,j,k,1:n_sp),Cv,n_sp,1)))
                 local_mach(i,j,k) = dsqrt(vel_square)/a(i,j,k)
                 tot_enthalpy(i,j,k) = p(i,j,k) + q(i,j,k,n_sp+4)
-                if (vib_flag==1) Tv(i,j,k) = vib_temp(i,j,k)
-                if (vib_flag==0) Tv(i,j,k) = T(i,j,k)
+                Tv(i,j,k) = vib_flag*vib_temp(i,j,k) + (1-vib_flag)*T(i,j,k)
 
                 ! if (vis_flag == 1 .and. n_sp==1) then
                     ! vis(i,j,k) = vis_ref*(T(i,j,k)/T_ref)**(3d0/2d0)*((T_ref+110d0)/(T(i,j,k)+110d0))
@@ -857,11 +844,11 @@ subroutine update(rkl)
                     mu(:) = 0.1d0*exp((At(:)*log(T(i,j,k)) + Bt(:))*log(T(i,j,k)) + Ct(:))
                     kap(:) = mu(:)*(Cv(:) + 3d0*Cv_tr(:)/2d0)
                     kap_v(:) = vib_flag*(mu(1:n_di)*(R_u/Mw(1:n_di))*(theta_v(:)/Tv(i,j,k))**2*(exp(theta_v(:)/Tv(i,j,k))/(exp(theta_v(:)/Tv(i,j,k))-1)**2))
-                    Mw_mix = add(q(i,j,k,1:n_sp),Mw,n_sp,-1)/ro(i,j,k)
+                    Mw_mix = 1d0/(add(q(i,j,k,1:n_sp),Mw,n_sp,-1)/ro(i,j,k))
                     X_t(:) = Mw_mix*q(i,j,k,1:n_sp)/(Mw(:)*ro(i,j,k))
                     do m=1,n_sp
-                        dum1(:) = X_t(:)*(1 + (mu(m)/mu(:))**(1/2d0)*(Mw(:)/Mw(m))**(1/4d0))**2
-                        dum2(:) = sqrt(8*(1 + Mw(m)/Mw(:)))
+                        dum1(:) = X_t(:)*(1d0 + (mu(m)/mu(:))**(1/2d0)*(Mw(:)/Mw(m))**(1/4d0))**2
+                        dum2(:) = sqrt(8d0*(1d0 + Mw(m)/Mw(:)))
                         phi_t(m) = add(dum1,dum2,n_sp,-1)
                     end do
                     dum1(:) = X_t(:)*mu(:)
@@ -869,7 +856,7 @@ subroutine update(rkl)
                     dum_v(:) = X_t(1:n_di)*kap_v(:)
                     vis(i,j,k) = add(dum1,phi_t,n_sp,-1)
                     cond(i,j,k) = add(dum2,phi_t,n_sp,-1)
-                    cond_v(i,j,k) = add(dum_v,phi_t(1:n_di),n_di,-1)
+                    cond_v(i,j,k) = vib_flag*add(dum_v,phi_t(1:n_di),n_di,-1)
                 ! elseif (vis_flag==0) then
                 !     vis(i,j,k) = 0d0
                 !      cond(i,j,k) = 0d0
@@ -940,19 +927,13 @@ subroutine update(rkl)
     do k=startz_vis,endz_vis
         do j=starty_vis,endy_vis
             do i=startx_vis,endx_vis
-                if(n_sp/=1) then
-                    D = Lewis*cond(i,j,k)/add(q(i,j,k,1:n_sp),Cp,n_sp,1)  !the formula says conductivity but doesnt specify whther translational or rotational or what. so tr+rot cond is taken here.
-                    do m=1,n_sp
-                        f_diff(m) = -ro(i,j,k)*D*d6dx(cs(:,:,:,m),i,j,k)                
-                        g_diff(m) = -ro(i,j,k)*D*d6dy(cs(:,:,:,m),i,j,k)
-                        h_diff(m) = -ro(i,j,k)*D*d6dz(cs(:,:,:,m),i,j,k)
-                    end do
-                else
-                    f_diff(1:n_sp) = 0d0
-                    g_diff(1:n_sp) = 0d0
-                    h_diff(1:n_sp) = 0d0
-                end if
-
+                D = Lewis*cond(i,j,k)/add(q(i,j,k,1:n_sp),Cp,n_sp,1)  !the formula says conductivity but doesnt specify whther translational or rotational or what. so tr+rot cond is taken here.
+                do m=1,n_sp
+                    f_diff(m) = -ro(i,j,k)*D*d6dx(cs(:,:,:,m),i,j,k)                
+                    g_diff(m) = -ro(i,j,k)*D*d6dy(cs(:,:,:,m),i,j,k)
+                    h_diff(m) = -ro(i,j,k)*D*d6dz(cs(:,:,:,m),i,j,k)
+                end do
+                
                 ev_s(1:n_di) = vib_flag*((R_u/Mw(1:n_di))*theta_v(:)/(exp(theta_v(:)/Tv(i,j,k))-1))
                 ev_s(n_di+1:n_sp) = 0d0
 
@@ -974,21 +955,21 @@ subroutine update(rkl)
                 visf(i,j,k,n_sp+2)  = towxy
                 visf(i,j,k,n_sp+3)  = towzx
                 visf(i,j,k,n_sp+4)  = u(i,j,k)*towxx + v(i,j,k)*towxy + w(i,j,k)*towzx - heatx(i,j,k) - add(f_diff,hs,n_sp,1)
-                if (vib_flag==1) visf(i,j,k,n_sp+5) = -(-cond_v(i,j,k)*d6dx(Tv,i,j,k)) - add(f_diff,ev_s,n_di,1)
+                visf(i,j,k,n_sp+5)  = vib_flag*(-(-cond_v(i,j,k)*d6dx(Tv,i,j,k)) - add(f_diff(1:n_di),ev_s(1:n_di),n_di,1))
                 
                 visg(i,j,k,1:n_sp)  = -g_diff(1:n_sp)
                 visg(i,j,k,n_sp+1)  = towxy
                 visg(i,j,k,n_sp+2)  = towyy
                 visg(i,j,k,n_sp+3)  = towyz
                 visg(i,j,k,n_sp+4)  = u(i,j,k)*towxy + v(i,j,k)*towyy + w(i,j,k)*towyz - heaty(i,j,k) - add(g_diff,hs,n_sp,1)
-                if (vib_flag==1) visg(i,j,k,n_sp+5) = -(-cond_v(i,j,k)*d6dx(Tv,i,j,k)) - add(g_diff,ev_s,n_di,1)
+                visg(i,j,k,n_sp+5)  = vib_flag*(-(-cond_v(i,j,k)*d6dx(Tv,i,j,k)) - add(g_diff(1:n_di),ev_s(1:n_di),n_di,1))
                 
                 vish(i,j,k,1:n_sp)  = -h_diff(1:n_sp) 
                 vish(i,j,k,n_sp+1)  = towzx
                 vish(i,j,k,n_sp+2)  = towyz
                 vish(i,j,k,n_sp+3)  = towzz
                 vish(i,j,k,n_sp+4)  = u(i,j,k)*towzx + v(i,j,k)*towyz + w(i,j,k)*towzz - heatz(i,j,k) - add(h_diff,hs,n_sp,1)
-                if (vib_flag==1) vish(i,j,k,n_sp+5) = -(-cond_v(i,j,k)*d6dx(Tv,i,j,k)) - add(h_diff,ev_s,n_di,1)
+                vish(i,j,k,n_sp+5)  = vib_flag*(-(-cond_v(i,j,k)*d6dx(Tv,i,j,k)) - add(h_diff(1:n_di),ev_s(1:n_di),n_di,1))
             end do
         end do
     end do
@@ -1079,7 +1060,7 @@ subroutine update(rkl)
                     ddx_fluxf(i,j,k,n_sp+2)  = 0.50d0*d6dx_vect(fluxf,i,j,k,n_sp+2) + 0.50d0*u(i,j,k)*d6dx_vect(q,i,j,k,n_sp+2) + 0.50d0*q(i,j,k,n_sp+2)*d6dx(u,i,j,k)
                     ddx_fluxf(i,j,k,n_sp+3)  = 0.50d0*d6dx_vect(fluxf,i,j,k,n_sp+3) + 0.50d0*u(i,j,k)*d6dx_vect(q,i,j,k,n_sp+3) + 0.50d0*q(i,j,k,n_sp+3)*d6dx(u,i,j,k)
                     ddx_fluxf(i,j,k,n_sp+4)  = 0.50d0*d6dx_vect(fluxf,i,j,k,n_sp+4) + 0.50d0*u(i,j,k)*d6dx(tot_enthalpy,i,j,k) + 0.50d0*tot_enthalpy(i,j,k)*d6dx(u,i,j,k)
-                    if(vib_flag==1) ddx_fluxf(i,j,k,n_sp+5)  = 0.50d0*d6dx_vect(fluxf,i,j,k,n_sp+5) + 0.50d0*u(i,j,k)*d6dx_vect(q,i,j,k,n_sp+5) + 0.50d0*q(i,j,k,n_sp+5)*d6dx(u,i,j,k)
+                    ddx_fluxf(i,j,k,n_sp+5)  = vib_flag*(0.50d0*d6dx_vect(fluxf,i,j,k,n_sp+5) + 0.50d0*u(i,j,k)*d6dx_vect(q,i,j,k,n_sp+5) + 0.50d0*q(i,j,k,n_sp+5)*d6dx(u,i,j,k))
 
                     do m=1,n_sp
                         ddy_fluxg(i,j,k,m)  = 0.50d0*d6dy_vect(fluxg,i,j,k,m) + 0.50d0*v(i,j,k)*d6dy_vect(q,i,j,k,m) + 0.50d0*q(i,j,k,m)*d6dy(v,i,j,k)
@@ -1088,7 +1069,7 @@ subroutine update(rkl)
                     ddy_fluxg(i,j,k,n_sp+2)  = 0.50d0*d6dy_vect(fluxg,i,j,k,n_sp+2) + 0.50d0*v(i,j,k)*d6dy_vect(q,i,j,k,n_sp+2) + 0.50d0*q(i,j,k,n_sp+2)*d6dy(v,i,j,k) + d6dy(p,i,j,k)
                     ddy_fluxg(i,j,k,n_sp+3)  = 0.50d0*d6dy_vect(fluxg,i,j,k,n_sp+3) + 0.50d0*v(i,j,k)*d6dy_vect(q,i,j,k,n_sp+3) + 0.50d0*q(i,j,k,n_sp+3)*d6dy(v,i,j,k)
                     ddy_fluxg(i,j,k,n_sp+4)  = 0.50d0*d6dy_vect(fluxg,i,j,k,n_sp+4) + 0.50d0*v(i,j,k)*d6dy(tot_enthalpy,i,j,k) + 0.50d0*tot_enthalpy(i,j,k)*d6dy(v,i,j,k)
-                    if(vib_flag==1) ddy_fluxg(i,j,k,n_sp+5)  = 0.50d0*d6dy_vect(fluxg,i,j,k,n_sp+5) + 0.50d0*v(i,j,k)*d6dy_vect(q,i,j,k,n_sp+5) + 0.50d0*q(i,j,k,n_sp+5)*d6dy(v,i,j,k)
+                    ddy_fluxg(i,j,k,n_sp+5)  = vib_flag*(0.50d0*d6dy_vect(fluxg,i,j,k,n_sp+5) + 0.50d0*v(i,j,k)*d6dy_vect(q,i,j,k,n_sp+5) + 0.50d0*q(i,j,k,n_sp+5)*d6dy(v,i,j,k))
 
                     do m=1,n_sp
                         ddz_fluxh(i,j,k,m)  = 0.50d0*d6dz_vect(fluxh,i,j,k,m) + 0.50d0*w(i,j,k)*d6dz_vect(q,i,j,k,m) + 0.50d0*q(i,j,k,m)*d6dz(w,i,j,k)
@@ -1097,7 +1078,7 @@ subroutine update(rkl)
                     ddz_fluxh(i,j,k,n_sp+2)  = 0.50d0*d6dz_vect(fluxh,i,j,k,n_sp+2) + 0.50d0*w(i,j,k)*d6dz_vect(q,i,j,k,n_sp+2) + 0.50d0*q(i,j,k,n_sp+2)*d6dz(w,i,j,k)
                     ddz_fluxh(i,j,k,n_sp+3)  = 0.50d0*d6dz_vect(fluxh,i,j,k,n_sp+3) + 0.50d0*w(i,j,k)*d6dz_vect(q,i,j,k,n_sp+3) + 0.50d0*q(i,j,k,n_sp+3)*d6dz(w,i,j,k) + d6dz(p,i,j,k)
                     ddz_fluxh(i,j,k,n_sp+4)  = 0.50d0*d6dz_vect(fluxh,i,j,k,n_sp+4) + 0.50d0*w(i,j,k)*d6dz(tot_enthalpy,i,j,k) + 0.50d0*tot_enthalpy(i,j,k)*d6dz(w,i,j,k)
-                    if(vib_flag==1) ddz_fluxh(i,j,k,n_sp+5)  = 0.50d0*d6dz_vect(fluxh,i,j,k,n_sp+5) + 0.50d0*w(i,j,k)*d6dz_vect(q,i,j,k,n_sp+5) + 0.50d0*q(i,j,k,n_sp+5)*d6dz(w,i,j,k)
+                    ddz_fluxh(i,j,k,n_sp+5)  = vib_flag*(0.50d0*d6dz_vect(fluxh,i,j,k,n_sp+5) + 0.50d0*w(i,j,k)*d6dz_vect(q,i,j,k,n_sp+5) + 0.50d0*q(i,j,k,n_sp+5)*d6dz(w,i,j,k))
                 end if
             end do
         end do
@@ -1144,18 +1125,19 @@ subroutine wenox(i,j,k,f_ih)
     double precision, dimension(neq,neq)         :: right_eigen,left_eigen
     double precision, dimension(neq)             :: flux_minus,flux_plus
     double precision, dimension(n_sp)            :: ro_r, ro_l, ro_avg
+    double precision, dimension(n_di)            :: evs_avg
     double precision                             :: f_charac(i-2:i+3,neq),f_charac_plus(i-2:i+3,neq),f_charac_minus(i-2:i+3,neq)
     double precision                             :: q_charac_x(i-2:i+3,neq)
     double precision                             :: epsilon=1e-6, d0=3d0/10d0, d1=3d0/5d0, d2=1d0/10d0, d0_dash=1d0/10d0, d1_dash=3d0/5d0, d2_dash=3d0/10d0
-    double precision                             :: u_r, u_l, v_r, v_l, w_r, w_l, ht_r, ht_l, a_r, a_l, u_avg,Tv_r,Tv_l, v_avg, w_avg, ht_avg, a_avg, p_pr, et_pr,Tv_avg,gamma
+    double precision                             :: u_r, u_l, v_r, v_l, w_r, w_l, ht_r, ht_l, a_r, a_l, u_avg,Tv_r,Tv_l, v_avg, w_avg, ht_avg, a_avg, p_pr, et_pr,T_avg,gamma
     integer                                      :: l, ll, entropy
 
     
     call primitive(i,j,k,ro_l,u_l,v_l,w_l,ht_l,a_l,Tv_l)
     call primitive(i+1,j,k,ro_r,u_r,v_r,w_r,ht_r,a_r,Tv_r)
-    call averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,Tv_avg,gamma)
-    call eigenvector(1,0,n_sp,neq,ro_avg(1:n_sp),u_avg,v_avg,w_avg,a_avg,ht_avg,h0(1:n_sp),(gamma-1d0),right_eigen)
-    call eigenvector(1,1,n_sp,neq,ro_avg(1:n_sp),u_avg,v_avg,w_avg,a_avg,ht_avg,h0(1:n_sp),(gamma-1d0),left_eigen)
+    call averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,T_avg,evs_avg,gamma)
+    call eigenvector(1,0,n_sp,n_di,neq,u_avg,v_avg,w_avg,a_avg,ht_avg,(gamma-1d0),R_u,T_avg,ro_avg(1:n_sp),Mw(1:n_sp),Cv(1:n_sp),h0(1:n_sp),evs_avg(1:n_di),right_eigen)
+    call eigenvector(1,1,n_sp,n_di,neq,u_avg,v_avg,w_avg,a_avg,ht_avg,(gamma-1d0),R_u,T_avg,ro_avg(1:n_sp),Mw(1:n_sp),Cv(1:n_sp),h0(1:n_sp),evs_avg(1:n_di),left_eigen)
     
 
     if (i==firstx) then
@@ -1295,20 +1277,20 @@ subroutine wenoy(i,j,k,g_ih)
     double precision, dimension(neq,neq)         :: right_eigen, left_eigen
     double precision, dimension(neq)             :: flux_minus, flux_plus
     double precision, dimension(n_sp)            :: ro_r, ro_l, ro_avg
+    double precision, dimension(n_di)            :: evs_avg
     double precision                             :: g_charac(j-2:j+3,neq), g_charac_plus(j-2:j+3,neq), g_charac_minus(j-2:j+3,neq)           !fluxes in characteristic form
     double precision                             :: q_charac_y(j-2:j+3,neq)
     double precision                             :: epsilon=1e-6, d0=3d0/10d0, d1=3d0/5d0, d2=1d0/10d0, d0_dash=1d0/10d0, d1_dash=3d0/5d0, d2_dash=3d0/10d0
-    double precision                             :: u_r, u_l, v_r, v_l, w_r, w_l, ht_r, ht_l, a_r, a_l,Tv_r,Tv_l, u_avg, v_avg, w_avg, ht_avg, a_avg, p_pr, et_pr,Tv_avg,gamma
+    double precision                             :: u_r, u_l, v_r, v_l, w_r, w_l, ht_r, ht_l, a_r, a_l,Tv_r,Tv_l, u_avg, v_avg, w_avg, ht_avg, a_avg, p_pr, et_pr,T_avg,gamma
     integer                                      :: l, ll, entropy
 
     
     call primitive(i,j,k,ro_l,u_l,v_l,w_l,ht_l,a_l,Tv_l)
     call primitive(i,j+1,k,ro_r,u_r,v_r,w_r,ht_r,a_r,Tv_r)
-    call averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,Tv_avg,gamma)
-    call eigenvector(2,0,n_sp,neq,ro_avg(1:n_sp),u_avg,v_avg,w_avg,a_avg,ht_avg,h0(1:n_sp),(gamma-1d0),right_eigen)
-    call eigenvector(2,1,n_sp,neq,ro_avg(1:n_sp),u_avg,v_avg,w_avg,a_avg,ht_avg,h0(1:n_sp),(gamma-1d0),left_eigen)
-
-
+    call averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,T_avg,evs_avg,gamma)
+    call eigenvector(2,0,n_sp,n_di,neq,u_avg,v_avg,w_avg,a_avg,ht_avg,(gamma-1d0),R_u,T_avg,ro_avg(1:n_sp),Mw(1:n_sp),Cv(1:n_sp),h0(1:n_sp),evs_avg(1:n_di),right_eigen)
+    call eigenvector(2,1,n_sp,n_di,neq,u_avg,v_avg,w_avg,a_avg,ht_avg,(gamma-1d0),R_u,T_avg,ro_avg(1:n_sp),Mw(1:n_sp),Cv(1:n_sp),h0(1:n_sp),evs_avg(1:n_di),left_eigen)
+    
     if(j==firsty) then
         do l=j,j+3,1
             temp(:) = fluxg(i,l,k,:)
@@ -1447,18 +1429,19 @@ subroutine wenoz(i,j,k,h_ih)
     double precision, dimension(neq,neq)         :: right_eigen, left_eigen
     double precision, dimension(neq)             :: flux_minus, flux_plus
     double precision, dimension(n_sp)            :: ro_r, ro_l, ro_avg
+    double precision, dimension(n_di)            :: evs_avg
     double precision                             :: h_charac(k-2:k+3,neq), h_charac_plus(k-2:k+3,neq), h_charac_minus(k-2:k+3,neq)             !fluxes in characteristic form 
     double precision                             :: q_charac_z(k-2:k+3,neq)
     double precision                             :: epsilon=1e-6, d0=3d0/10d0, d1=3d0/5d0, d2=1d0/10d0, d0_dash=1d0/10d0, d1_dash=3d0/5d0, d2_dash=3d0/10d0
-    double precision                             :: u_r, u_l, v_r, v_l, w_r, w_l, ht_r, ht_l, a_r, a_l,Tv_r,Tv_l, u_avg, v_avg, w_avg,ht_avg, a_avg, p_pr, et_pr,Tv_avg,gamma
+    double precision                             :: u_r, u_l, v_r, v_l, w_r, w_l, ht_r, ht_l, a_r, a_l,Tv_r,Tv_l, u_avg, v_avg, w_avg,ht_avg, a_avg, p_pr, et_pr,T_avg,gamma
     integer                                      :: l, ll, entropy
 
     
     call primitive(i,j,k,ro_l,u_l,v_l,w_l,ht_l,a_l,Tv_l)
     call primitive(i,j,k+1,ro_r,u_r,v_r,w_r,ht_r,a_r,Tv_r)
-    call averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,Tv_avg,gamma)
-    call eigenvector(3,0,n_sp,neq,ro_avg(1:n_sp),u_avg,v_avg,w_avg,a_avg,ht_avg,h0(1:n_sp),(gamma-1d0),right_eigen)
-    call eigenvector(3,1,n_sp,neq,ro_avg(1:n_sp),u_avg,v_avg,w_avg,a_avg,ht_avg,h0(1:n_sp),(gamma-1d0),left_eigen)
+    call averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,T_avg,evs_avg,gamma)
+    call eigenvector(3,0,n_sp,n_di,neq,u_avg,v_avg,w_avg,a_avg,ht_avg,(gamma-1d0),R_u,T_avg,ro_avg(1:n_sp),Mw(1:n_sp),Cv(1:n_sp),h0(1:n_sp),evs_avg(1:n_di),right_eigen)
+    call eigenvector(3,1,n_sp,n_di,neq,u_avg,v_avg,w_avg,a_avg,ht_avg,(gamma-1d0),R_u,T_avg,ro_avg(1:n_sp),Mw(1:n_sp),Cv(1:n_sp),h0(1:n_sp),evs_avg(1:n_di),left_eigen)
 
     
     if(k==firstz) then
@@ -1592,22 +1575,17 @@ subroutine eigen_val(u,a,num,eigen)
     double precision, intent(in)                  :: u,a
     double precision, dimension(num), intent(out) :: eigen
     
-    !ideal gas
-    if(num==5) then
-        eigen(1) = u - a
-        eigen(2) = u
-        eigen(3) = u + a
-        eigen(4) = u
-        eigen(5) = u
-    else if(num==6) then
-        eigen(1) = u
-        eigen(2) = u
-        eigen(3) = u
-        eigen(4) = u
-        eigen(5) = u + a
-        eigen(6) = u - a
-    end if
-
+    eigen(1)  = u
+    eigen(2)  = u
+    eigen(3)  = u
+    eigen(4)  = u
+    eigen(5)  = u
+    eigen(6)  = u
+    eigen(7)  = u
+    eigen(8)  = u
+    eigen(9)  = u + a
+    eigen(10) = u - a
+    
 end subroutine eigen_val
 
 !******************************************************************************************************************************************************************************************************
@@ -1648,17 +1626,17 @@ end subroutine primitive
 
 !********************************************************************************CALCULATES ROE AVERAGES***********************************************************************************************
 
-subroutine averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,Tv_avg,gamma)
-    
+subroutine averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg,u_avg,v_avg,w_avg,ht_avg,a_avg,T_avg,evs_avg,gamma)
+
     use variables
     implicit none
     double precision, dimension(n_sp), intent(in)  :: ro_r,ro_l
     double precision, intent(in)                   :: u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l
     double precision, dimension(n_sp), intent(out) :: ro_avg
-    double precision, intent(out)                  :: u_avg,v_avg,w_avg,ht_avg,a_avg,Tv_avg,gamma
-    double precision, dimension(n_sp)              :: one=1d0
-    double precision, dimension(n_di)              :: ev_s   
-    double precision                               :: k,average,ro_tot_avg,add,R_s
+    double precision, dimension(n_di), intent(out) :: evs_avg
+    double precision, intent(out)                  :: u_avg,v_avg,w_avg,ht_avg,a_avg,T_avg,gamma
+    double precision, dimension(n_sp)              :: one=1d0   
+    double precision                               :: ke,average,ro_tot_avg,add,R_s,Tv_avg
 
     ro_avg(:) = (ro_r(:)+ro_l(:))/2d0
     ro_tot_avg = add(ro_avg,one,n_sp,1)
@@ -1668,12 +1646,13 @@ subroutine averages(ro_r,ro_l,u_r,u_l,v_r,v_l,w_r,w_l,ht_r,ht_l,Tv_r,Tv_l,ro_avg
     ht_avg = (ht_r+ht_l)/2d0
     Tv_avg = (Tv_r+Tv_l)/2d0
     
-    k = (u_avg*u_avg + v_avg*v_avg + w_avg*w_avg)/2d0
-    ev_s(1:n_di) = vib_flag*((R_u/Mw(1:n_di))*theta_v(:)/(exp(theta_v(:)/Tv_avg)-1))
+    ke = (u_avg*u_avg + v_avg*v_avg + w_avg*w_avg)/2d0
+    evs_avg(1:n_di) = vib_flag*((R_u/Mw(1:n_di))*theta_v(:)/(exp(theta_v(:)/Tv_avg)-1))
     
     R_s = R_u*add(ro_avg(:),Mw(:),n_sp,-1)/ro_tot_avg
     gamma = (1 + R_s*ro_tot_avg/add(ro_avg(:),Cv(:),n_sp,1))    
-    a_avg = sqrt((gamma-1d0)*(ht_avg - k - chem_flag*add(ro_avg,h0,n_sp,1)/ro_tot_avg - vib_flag*add(ro_avg(1:n_di),ev_s(1:n_di),n_di,1)/ro_tot_avg))
+    a_avg = sqrt((gamma-1d0)*(ht_avg - ke - chem_flag*add(ro_avg,h0,n_sp,1)/ro_tot_avg - vib_flag*add(ro_avg(1:n_di),evs_avg(1:n_di),n_di,1)/ro_tot_avg))
+    T_avg = a_avg**2/(gamma*R_s)
     
 end subroutine averages
 
@@ -1826,7 +1805,7 @@ subroutine vib_source(ws,wv)
             do i=startx,endx
                 ro_s(:) = q(i,j,k,1:n_sp)
                 
-                Mw_mix = add(ro_s,Mw,n_sp,-1)/ro(i,j,k)
+                Mw_mix = 1d0/(add(ro_s,Mw,n_sp,-1)/ro(i,j,k))
 
                 do s=1,3
                     ev_s(s)       = (R_u/Mw(s))*(theta_v(s)/(exp(theta_v(s)/Tv(i,j,k))-1))
@@ -2150,7 +2129,7 @@ double precision function vib_temp(i,j,k)
         m = m + 1
         if(m>1000000) then
             write(*,*)'convergence problem in "vib_temp"'
-            write(*,*)iter,i,j,k,m,func,eps
+            write(*,*)iter,i,j,k,m,Ev,func,eps
             stop
         end if
     end do                
