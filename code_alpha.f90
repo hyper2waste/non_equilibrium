@@ -139,9 +139,9 @@ subroutine compute()
                                 q(i,j,k,m) = q0(i,j,k,m) - 1.0d0/l*dt*(ddx_fluxf(i,j,k,m) + ddy_fluxg(i,j,k,m) + ddz_fluxh(i,j,k,m)) + &
                                                            1.0d0/l*dt*(d6dx_vect(visf,i,j,k,m) + d6dy_vect(visg,i,j,k,m) + d6dz_vect(vish,i,j,k,m))
                             else
-                                q(i,j,k,m) = q0(i,j,k,m) - (1.0d0/l*dt*(ddx_fluxf(i,j,k,m) + ddy_fluxg(i,j,k,m) + ddz_fluxh(i,j,k,m)) + &
-                                                           1.0d0/l*dt*(d6dx_vect(visf,i,j,k,m) + d6dy_vect(visg,i,j,k,m) + d6dz_vect(vish,i,j,k,m)) + &
-                                                           1.0d0/l*dt*wv(i,j,k))*vib_flag
+                                q(i,j,k,m) = q0(i,j,k,m) - 1.0d0/l*dt*(ddx_fluxf(i,j,k,m) + ddy_fluxg(i,j,k,m) + ddz_fluxh(i,j,k,m))*vib_flag + &
+                                                           1.0d0/l*dt*(d6dx_vect(visf,i,j,k,m) + d6dy_vect(visg,i,j,k,m) + d6dz_vect(vish,i,j,k,m))*vib_flag + &
+                                                           1.0d0/l*dt*wv(i,j,k)*vib_flag
                             end if
                         end do
                     end do
