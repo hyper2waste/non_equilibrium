@@ -466,7 +466,7 @@ subroutine output(nth,ws)
     numrc3 = numrc2/10
     numrc4 = mod(numrc2,10)
 
-    filename='neq'//char(nprocs+48)//'_'//char(digit1+48)//char(digit3+48)//char(digit5+48)//char(digit7+48)//char(digit9+48)//char(digit11+48)//char(digit12+48)//'p'//char(numrc1+48)//char(numrc3+48)//char(numrc4+48)//'.dat'
+    filename='neq_weno'//char(nprocs+48)//'_'//char(digit1+48)//char(digit3+48)//char(digit5+48)//char(digit7+48)//char(digit9+48)//char(digit11+48)//char(digit12+48)//'p'//char(numrc1+48)//char(numrc3+48)//char(numrc4+48)//'.dat'
     open(unit=40,file=filename,STATUS='REPLACE',ACTION='WRITE',IOSTAT=ierr)
     if(ierr/=0) write(*,*)filename,ierr
     write(40,'(a180)') 'variables="z","y","x","ro1","ro2","ro3","ro4","ro5","ro","p","T","Tv","u","v","w"'
@@ -892,7 +892,7 @@ subroutine update(rkl)
     !         end do
     !     end do
     ! end do
-    ducros(:,:,:) = 0d0!.6
+    ducros(:,:,:) = 0.6
 
     do k=startz,endz
         do j=starty,endy
@@ -1747,6 +1747,8 @@ subroutine source(ws)
                     k_eq(m) = cm(m)*exp(a1(m)/Z_s + a2(m) + a3(m)*log(Z_s) + a4(m)*Z_s + a5(m)*Z_s**2)
                     k_b(m) = (cf(m)*T(i,j,k)**eta(m)*exp(-theta(m)/T(i,j,k)))/k_eq(m)
                 end do
+
+                ro_s(:)  = q(i,j,k,1:n_sp)
 
                 R1 = 0d0
                 R2 = 0d0
